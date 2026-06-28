@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import unquote, urljoin, urlparse
+from urllib.request import Request, urlopen
+import re
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
@@ -26,6 +30,9 @@ class PdfToolboxApp(tk.Tk):
         self.output_dir = tk.StringVar(value=str(Path.home() / "Desktop"))
         self.split_mode = tk.StringVar(value="pages")
         self.range_text = tk.StringVar(value="1-3,5")
+        self.web_url = tk.StringVar()
+        self.download_dir = tk.StringVar(value=str(Path.home() / "Downloads"))
+        self.download_status = tk.StringVar(value="URL を入力してダウンロードを開始してください。")
 
         self._build_ui()
 
@@ -35,11 +42,14 @@ class PdfToolboxApp(tk.Tk):
 
         merge_tab = ttk.Frame(notebook, padding=12)
         split_tab = ttk.Frame(notebook, padding=12)
+        download_tab = ttk.Frame(notebook, padding=12)
         notebook.add(merge_tab, text="PDF 統合")
         notebook.add(split_tab, text="PDF 分割")
+        notebook.add(download_tab, text="Web ファイル保存")
 
         self._build_merge_tab(merge_tab)
         self._build_split_tab(split_tab)
+        self._build_download_tab(download_tab)
 
     def _build_merge_tab(self, parent: ttk.Frame) -> None:
         instructions = "統合したい PDF を追加し、必要に応じて順番を変更してください。"
@@ -93,6 +103,53 @@ class PdfToolboxApp(tk.Tk):
         ttk.Label(range_frame, text="例: 1-3,5,8-10").pack(side=tk.LEFT)
 
         ttk.Button(parent, text="PDF を分割", command=self.split_pdf).pack(anchor=tk.E, pady=(8, 0))
+
+
+    def _build_download_tab(self, parent: ttk.Frame) -> None:
+        ttk.Label(
+            parent,
+            text="Web ページの URL を指定すると、ページ内のファイルリンクをすべて保存します。",
+        ).pack(anchor=tk.W, pady=(0, 8))
+
+        url_frame = ttk.Frame(parent)
+        url_frame.pack(fill=tk.X, pady=4)
+        ttk.Label(url_frame, text="URL:").pack(side=tk.LEFT)
+        ttk.Entry(url_frame, textvariable=self.web_url).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+
+        output_frame = ttk.Frame(parent)
+        output_frame.pack(fill=tk.X, pady=4)
+        ttk.Entry(output_frame, textvariable=self.download_dir).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(output_frame, text="保存フォルダー", command=self.select_download_dir).pack(side=tk.LEFT, padx=(8, 0))
+
+        ttk.Label(
+            parent,
+            text="対象: PDF、Office 文書、画像、動画、音声、ZIP などの直接ファイルリンク",
+        ).pack(anchor=tk.W, pady=(10, 0))
+        ttk.Label(parent, textvariable=self.download_status, relief=tk.SUNKEN, padding=6).pack(fill=tk.X, pady=8)
+        ttk.Button(parent, text="ファイルリンクをすべてダウンロード", command=self.download_web_files).pack(anchor=tk.E)
+
+    def select_download_dir(self) -> None:
+        directory = filedialog.askdirectory(title="Web ファイルの保存フォルダー")
+        if directory:
+            self.download_dir.set(directory)
+
+    def download_web_files(self) -> None:
+        page_url = self.web_url.get().strip()
+        if not page_url:
+            messagebox.showwarning("Web ファイル保存", "Web ページの URL を入力してください。")
+            return
+
+        output_path = Path(self.download_dir.get()).expanduser()
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        try:
+            downloaded = download_file_links(page_url, output_path)
+        except Exception as error:  # noqa: BLE001 - show actionable desktop error dialog
+            messagebox.showerror("Web ファイル保存エラー", f"ファイルのダウンロードに失敗しました。\n{error}")
+            return
+
+        self.download_status.set(f"{downloaded} 件のファイルを保存しました: {output_path}")
+        messagebox.showinfo("Web ファイル保存", f"{downloaded} 件のファイルを保存しました。")
 
     def add_merge_files(self) -> None:
         files = filedialog.askopenfilenames(title="統合する PDF を選択", filetypes=[("PDF files", "*.pdf")])
@@ -216,6 +273,78 @@ class PdfToolboxApp(tk.Tk):
     def _write_pdf(writer: Any, path: Path) -> None:
         with path.open("wb") as output_file:
             writer.write(output_file)
+
+
+FILE_LINK_EXTENSIONS = {
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".csv", ".txt",
+    ".zip", ".rar", ".7z", ".tar", ".gz", ".jpg", ".jpeg", ".png", ".gif", ".webp",
+    ".svg", ".mp3", ".wav", ".mp4", ".mov", ".avi", ".wmv", ".exe", ".dmg", ".iso",
+}
+
+
+class FileLinkParser(HTMLParser):
+    """Collect href/src values that point to downloadable files."""
+
+    def __init__(self, base_url: str) -> None:
+        super().__init__()
+        self.base_url = base_url
+        self.links: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr_names = ("href", "src") if tag in {"a", "source", "video", "audio", "img"} else ("href",)
+        values = dict(attrs)
+        for attr_name in attr_names:
+            value = values.get(attr_name)
+            if value and is_file_link(value):
+                absolute_url = urljoin(self.base_url, value)
+                if absolute_url not in self.links:
+                    self.links.append(absolute_url)
+
+
+def is_file_link(url: str) -> bool:
+    """Return True when a URL path looks like a direct downloadable file."""
+    path = urlparse(url).path.lower()
+    return Path(path).suffix in FILE_LINK_EXTENSIONS
+
+
+def extract_file_links(html: str, base_url: str) -> list[str]:
+    """Extract unique absolute file links from an HTML document."""
+    parser = FileLinkParser(base_url)
+    parser.feed(html)
+    return parser.links
+
+
+def safe_download_name(url: str, used_names: set[str]) -> str:
+    """Create a filesystem-safe unique filename from a URL."""
+    parsed = urlparse(url)
+    name = unquote(Path(parsed.path).name) or "download"
+    name = re.sub(r'[^\w.()\- ]+', "_", name).strip(" .") or "download"
+    stem = Path(name).stem or "download"
+    suffix = Path(name).suffix
+    candidate = name
+    counter = 2
+    while candidate in used_names:
+        candidate = f"{stem}_{counter}{suffix}"
+        counter += 1
+    used_names.add(candidate)
+    return candidate
+
+
+def download_file_links(page_url: str, output_dir: Path) -> int:
+    """Download every direct file link found on a web page into output_dir."""
+    request = Request(page_url, headers={"User-Agent": "PDF-Toolbox-Web-Downloader/1.0"})
+    with urlopen(request, timeout=30) as response:  # noqa: S310 - user-provided desktop utility URL
+        charset = response.headers.get_content_charset() or "utf-8"
+        html = response.read().decode(charset, errors="replace")
+
+    links = extract_file_links(html, page_url)
+    used_names: set[str] = set()
+    for link in links:
+        target = output_dir / safe_download_name(link, used_names)
+        file_request = Request(link, headers={"User-Agent": "PDF-Toolbox-Web-Downloader/1.0"})
+        with urlopen(file_request, timeout=60) as response, target.open("wb") as output_file:  # noqa: S310
+            output_file.write(response.read())
+    return len(links)
 
 
 def parse_page_ranges(range_text: str, page_count: int) -> list[tuple[int, int]]:
