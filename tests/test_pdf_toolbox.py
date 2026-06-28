@@ -5,7 +5,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pdf_toolbox import extract_file_links, is_file_link, parse_page_ranges, safe_download_name
+from pdf_toolbox import extract_file_links, is_file_link, parse_page_ranges, safe_download_name, selected_extensions
 
 
 def test_parse_page_ranges_accepts_single_pages_and_ranges():
@@ -50,3 +50,30 @@ def test_safe_download_name_sanitizes_and_deduplicates_names():
     assert safe_download_name("https://example.com/files/my%20report.pdf", used_names) == "my report.pdf"
     assert safe_download_name("https://example.com/other/my%20report.pdf", used_names) == "my report_2.pdf"
     assert safe_download_name("https://example.com/files/a:b.zip", used_names) == "a_b.zip"
+
+
+def test_selected_extensions_combines_multiple_file_type_groups():
+    assert selected_extensions(["pdf", "word"]) == {".pdf", ".doc", ".docx"}
+
+
+def test_selected_extensions_rejects_empty_selection():
+    with pytest.raises(ValueError):
+        selected_extensions([])
+
+
+def test_extract_file_links_filters_by_selected_extensions():
+    html = """
+    <a href="/docs/report.pdf">report</a>
+    <a href="/docs/plan.docx">plan</a>
+    <img src="/images/chart.png">
+    """
+
+    assert extract_file_links(html, "https://example.com/", {".pdf", ".docx"}) == [
+        "https://example.com/docs/report.pdf",
+        "https://example.com/docs/plan.docx",
+    ]
+
+
+def test_is_file_link_uses_custom_extension_filter():
+    assert is_file_link("https://example.com/files/report.pdf", {".pdf"})
+    assert not is_file_link("https://example.com/files/report.pdf", {".docx"})

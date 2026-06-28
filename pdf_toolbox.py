@@ -33,6 +33,7 @@ class PdfToolboxApp(tk.Tk):
         self.web_url = tk.StringVar()
         self.download_dir = tk.StringVar(value=str(Path.home() / "Downloads"))
         self.download_status = tk.StringVar(value="URL を入力してダウンロードを開始してください。")
+        self.file_type_vars: dict[str, tk.BooleanVar] = {}
 
         self._build_ui()
 
@@ -121,12 +122,20 @@ class PdfToolboxApp(tk.Tk):
         ttk.Entry(output_frame, textvariable=self.download_dir).pack(side=tk.LEFT, fill=tk.X, expand=True)
         ttk.Button(output_frame, text="保存フォルダー", command=self.select_download_dir).pack(side=tk.LEFT, padx=(8, 0))
 
-        ttk.Label(
-            parent,
-            text="対象: PDF、Office 文書、画像、動画、音声、ZIP などの直接ファイルリンク",
-        ).pack(anchor=tk.W, pady=(10, 0))
+        type_frame = ttk.LabelFrame(parent, text="取得するファイル形式（複数選択可）", padding=10)
+        type_frame.pack(fill=tk.X, pady=(10, 0))
+        for index, (key, config) in enumerate(FILE_TYPE_GROUPS.items()):
+            variable = tk.BooleanVar(value=key in DEFAULT_FILE_TYPE_GROUPS)
+            self.file_type_vars[key] = variable
+            ttk.Checkbutton(type_frame, text=config["label"], variable=variable).grid(
+                row=index // 3, column=index % 3, sticky=tk.W, padx=(0, 18), pady=2
+            )
+
         ttk.Label(parent, textvariable=self.download_status, relief=tk.SUNKEN, padding=6).pack(fill=tk.X, pady=8)
-        ttk.Button(parent, text="ファイルリンクをすべてダウンロード", command=self.download_web_files).pack(anchor=tk.E)
+        action_frame = ttk.Frame(parent)
+        action_frame.pack(fill=tk.X)
+        ttk.Button(action_frame, text="ファイルリンクを一括ダウンロード", command=self.download_web_files).pack(side=tk.RIGHT)
+        ttk.Button(action_frame, text="Web ページ全体を PDF 保存", command=self.save_web_page_pdf).pack(side=tk.RIGHT, padx=(0, 8))
 
     def select_download_dir(self) -> None:
         directory = filedialog.askdirectory(title="Web ファイルの保存フォルダー")
@@ -143,13 +152,41 @@ class PdfToolboxApp(tk.Tk):
         output_path.mkdir(parents=True, exist_ok=True)
 
         try:
-            downloaded = download_file_links(page_url, output_path)
+            extensions = selected_extensions(self.selected_file_type_groups())
+            downloaded = download_file_links(page_url, output_path, extensions)
         except Exception as error:  # noqa: BLE001 - show actionable desktop error dialog
             messagebox.showerror("Web ファイル保存エラー", f"ファイルのダウンロードに失敗しました。\n{error}")
             return
 
         self.download_status.set(f"{downloaded} 件のファイルを保存しました: {output_path}")
         messagebox.showinfo("Web ファイル保存", f"{downloaded} 件のファイルを保存しました。")
+
+
+    def selected_file_type_groups(self) -> list[str]:
+        return [key for key, variable in self.file_type_vars.items() if variable.get()]
+
+    def save_web_page_pdf(self) -> None:
+        page_url = self.web_url.get().strip()
+        if not page_url:
+            messagebox.showwarning("Web ページ PDF 保存", "Web ページの URL を入力してください。")
+            return
+
+        save_path = filedialog.asksaveasfilename(
+            title="Web ページ全体の PDF 保存先",
+            defaultextension=".pdf",
+            filetypes=[("PDF files", "*.pdf")],
+        )
+        if not save_path:
+            return
+
+        try:
+            save_web_page_as_pdf(page_url, Path(save_path))
+        except Exception as error:  # noqa: BLE001 - show actionable desktop error dialog
+            messagebox.showerror("Web ページ PDF 保存エラー", f"Web ページの PDF 保存に失敗しました。\n{error}")
+            return
+
+        self.download_status.set(f"Web ページ全体を PDF 保存しました: {save_path}")
+        messagebox.showinfo("Web ページ PDF 保存", "Web ページ全体の PDF 保存が完了しました。")
 
     def add_merge_files(self) -> None:
         files = filedialog.askopenfilenames(title="統合する PDF を選択", filetypes=[("PDF files", "*.pdf")])
@@ -275,19 +312,32 @@ class PdfToolboxApp(tk.Tk):
             writer.write(output_file)
 
 
-FILE_LINK_EXTENSIONS = {
-    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".csv", ".txt",
-    ".zip", ".rar", ".7z", ".tar", ".gz", ".jpg", ".jpeg", ".png", ".gif", ".webp",
-    ".svg", ".mp3", ".wav", ".mp4", ".mov", ".avi", ".wmv", ".exe", ".dmg", ".iso",
+FILE_TYPE_GROUPS = {
+    "pdf": {"label": "PDF（.pdf）", "extensions": {".pdf"}},
+    "word": {"label": "Word（.doc/.docx）", "extensions": {".doc", ".docx"}},
+    "excel": {"label": "Excel/CSV（.xls/.xlsx/.csv）", "extensions": {".xls", ".xlsx", ".csv"}},
+    "powerpoint": {"label": "PowerPoint（.ppt/.pptx）", "extensions": {".ppt", ".pptx"}},
+    "text": {"label": "テキスト（.txt）", "extensions": {".txt"}},
+    "image": {"label": "画像（jpg/png/gif/webp/svg）", "extensions": {".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg"}},
+    "archive": {"label": "圧縮ファイル（zip/rar/7z/tar/gz）", "extensions": {".zip", ".rar", ".7z", ".tar", ".gz"}},
+    "media": {"label": "動画・音声（mp4/mov/mp3等）", "extensions": {".mp3", ".wav", ".mp4", ".mov", ".avi", ".wmv"}},
+    "installer": {"label": "実行/ディスクイメージ（exe/dmg/iso）", "extensions": {".exe", ".dmg", ".iso"}},
 }
+DEFAULT_FILE_TYPE_GROUPS = ("pdf", "word", "excel", "powerpoint")
+FILE_LINK_EXTENSIONS = frozenset(
+    extension
+    for config in FILE_TYPE_GROUPS.values()
+    for extension in config["extensions"]
+)
 
 
 class FileLinkParser(HTMLParser):
     """Collect href/src values that point to downloadable files."""
 
-    def __init__(self, base_url: str) -> None:
+    def __init__(self, base_url: str, extensions: set[str] | frozenset[str] = FILE_LINK_EXTENSIONS) -> None:
         super().__init__()
         self.base_url = base_url
+        self.extensions = {extension.lower() for extension in extensions}
         self.links: list[str] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
@@ -295,21 +345,36 @@ class FileLinkParser(HTMLParser):
         values = dict(attrs)
         for attr_name in attr_names:
             value = values.get(attr_name)
-            if value and is_file_link(value):
+            if value and is_file_link(value, self.extensions):
                 absolute_url = urljoin(self.base_url, value)
                 if absolute_url not in self.links:
                     self.links.append(absolute_url)
 
 
-def is_file_link(url: str) -> bool:
+def selected_extensions(selected_groups: list[str]) -> set[str]:
+    """Return the file extensions represented by the selected file type groups."""
+    extensions: set[str] = set()
+    for group in selected_groups:
+        config = FILE_TYPE_GROUPS.get(group)
+        if config:
+            extensions.update(config["extensions"])
+    if not extensions:
+        raise ValueError("取得するファイル形式を 1 つ以上選択してください。")
+    return extensions
+
+
+def is_file_link(url: str, extensions: set[str] | frozenset[str] = FILE_LINK_EXTENSIONS) -> bool:
     """Return True when a URL path looks like a direct downloadable file."""
     path = urlparse(url).path.lower()
-    return Path(path).suffix in FILE_LINK_EXTENSIONS
+    normalized_extensions = {extension.lower() for extension in extensions}
+    return Path(path).suffix in normalized_extensions
 
 
-def extract_file_links(html: str, base_url: str) -> list[str]:
+def extract_file_links(
+    html: str, base_url: str, extensions: set[str] | frozenset[str] = FILE_LINK_EXTENSIONS
+) -> list[str]:
     """Extract unique absolute file links from an HTML document."""
-    parser = FileLinkParser(base_url)
+    parser = FileLinkParser(base_url, extensions)
     parser.feed(html)
     return parser.links
 
@@ -330,14 +395,16 @@ def safe_download_name(url: str, used_names: set[str]) -> str:
     return candidate
 
 
-def download_file_links(page_url: str, output_dir: Path) -> int:
-    """Download every direct file link found on a web page into output_dir."""
+def download_file_links(
+    page_url: str, output_dir: Path, extensions: set[str] | frozenset[str] = FILE_LINK_EXTENSIONS
+) -> int:
+    """Download every direct file link matching extensions found on a web page into output_dir."""
     request = Request(page_url, headers={"User-Agent": "PDF-Toolbox-Web-Downloader/1.0"})
     with urlopen(request, timeout=30) as response:  # noqa: S310 - user-provided desktop utility URL
         charset = response.headers.get_content_charset() or "utf-8"
         html = response.read().decode(charset, errors="replace")
 
-    links = extract_file_links(html, page_url)
+    links = extract_file_links(html, page_url, extensions)
     used_names: set[str] = set()
     for link in links:
         target = output_dir / safe_download_name(link, used_names)
@@ -345,6 +412,28 @@ def download_file_links(page_url: str, output_dir: Path) -> int:
         with urlopen(file_request, timeout=60) as response, target.open("wb") as output_file:  # noqa: S310
             output_file.write(response.read())
     return len(links)
+
+
+def save_web_page_as_pdf(page_url: str, output_path: Path) -> None:
+    """Render a web page in Chromium and save the complete page as a PDF."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError as error:
+        raise RuntimeError(
+            "Web ページ全体の PDF 保存には playwright が必要です。"
+            "requirements.txt を再インストールし、`python -m playwright install chromium` を実行してください。"
+        ) from error
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page()
+            page.goto(page_url, wait_until="networkidle", timeout=60_000)
+            page.emulate_media(media="screen")
+            page.pdf(path=str(output_path), format="A4", print_background=True)
+        finally:
+            browser.close()
 
 
 def parse_page_ranges(range_text: str, page_count: int) -> list[tuple[int, int]]:
