@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from html.parser import HTMLParser
 from pathlib import Path
+from urllib.parse import unquote, urljoin, urlparse
+from urllib.request import Request, urlopen
+import re
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NamedTuple
 
 if TYPE_CHECKING:
     from pypdf import PdfReader, PdfWriter
@@ -26,6 +30,10 @@ class PdfToolboxApp(tk.Tk):
         self.output_dir = tk.StringVar(value=str(Path.home() / "Desktop"))
         self.split_mode = tk.StringVar(value="pages")
         self.range_text = tk.StringVar(value="1-3,5")
+        self.web_url = tk.StringVar()
+        self.download_dir = tk.StringVar(value=str(Path.home() / "Downloads"))
+        self.download_status = tk.StringVar(value="URL と形式を選択してダウンロードを開始してください。")
+        self.download_type_vars: dict[str, tk.BooleanVar] = {}
 
         self._build_ui()
 
@@ -35,11 +43,14 @@ class PdfToolboxApp(tk.Tk):
 
         merge_tab = ttk.Frame(notebook, padding=12)
         split_tab = ttk.Frame(notebook, padding=12)
+        download_tab = ttk.Frame(notebook, padding=12)
         notebook.add(merge_tab, text="PDF 統合")
         notebook.add(split_tab, text="PDF 分割")
+        notebook.add(download_tab, text="Web ファイル保存")
 
         self._build_merge_tab(merge_tab)
         self._build_split_tab(split_tab)
+        self._build_download_tab(download_tab)
 
     def _build_merge_tab(self, parent: ttk.Frame) -> None:
         instructions = "統合したい PDF を追加し、必要に応じて順番を変更してください。"
@@ -93,6 +104,81 @@ class PdfToolboxApp(tk.Tk):
         ttk.Label(range_frame, text="例: 1-3,5,8-10").pack(side=tk.LEFT)
 
         ttk.Button(parent, text="PDF を分割", command=self.split_pdf).pack(anchor=tk.E, pady=(8, 0))
+
+    def _build_download_tab(self, parent: ttk.Frame) -> None:
+        ttk.Label(
+            parent,
+            text="Web ページの URL を指定すると、ページ内のファイルリンクをすべて保存します。",
+        ).pack(anchor=tk.W, pady=(0, 8))
+
+        url_frame = ttk.Frame(parent)
+        url_frame.pack(fill=tk.X, pady=4)
+        ttk.Label(url_frame, text="URL:").pack(side=tk.LEFT)
+        ttk.Entry(url_frame, textvariable=self.web_url).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(8, 0))
+
+        output_frame = ttk.Frame(parent)
+        output_frame.pack(fill=tk.X, pady=4)
+        ttk.Entry(output_frame, textvariable=self.download_dir).pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ttk.Button(output_frame, text="保存フォルダー", command=self.select_download_dir).pack(side=tk.LEFT, padx=(8, 0))
+
+        type_frame = ttk.LabelFrame(parent, text="ダウンロードするファイル形式（複数選択可）", padding=10)
+        type_frame.pack(fill=tk.X, pady=(10, 0))
+        for column, (type_key, file_type) in enumerate(DOWNLOAD_FILE_TYPES.items()):
+            selected = type_key in {"pdf", "word"}
+            variable = tk.BooleanVar(value=selected)
+            self.download_type_vars[type_key] = variable
+            ttk.Checkbutton(
+                type_frame,
+                text=f"{file_type.label} ({', '.join(file_type.extensions)})",
+                variable=variable,
+            ).grid(row=column // 2, column=column % 2, sticky=tk.W, padx=(0, 20), pady=2)
+
+        action_frame = ttk.Frame(parent)
+        action_frame.pack(fill=tk.X, pady=8)
+        ttk.Button(action_frame, text="すべて選択", command=lambda: self.set_download_types(True)).pack(side=tk.LEFT)
+        ttk.Button(action_frame, text="すべて解除", command=lambda: self.set_download_types(False)).pack(side=tk.LEFT, padx=6)
+
+        ttk.Label(parent, textvariable=self.download_status, relief=tk.SUNKEN, padding=6).pack(fill=tk.X, pady=8)
+        ttk.Button(parent, text="選択した形式のファイルをダウンロード", command=self.download_web_files).pack(anchor=tk.E)
+
+    def set_download_types(self, selected: bool) -> None:
+        for variable in self.download_type_vars.values():
+            variable.set(selected)
+
+    def get_selected_download_extensions(self) -> set[str]:
+        extensions: set[str] = set()
+        for type_key, variable in self.download_type_vars.items():
+            if variable.get():
+                extensions.update(DOWNLOAD_FILE_TYPES[type_key].extensions)
+        return extensions
+
+    def select_download_dir(self) -> None:
+        directory = filedialog.askdirectory(title="Web ファイルの保存フォルダー")
+        if directory:
+            self.download_dir.set(directory)
+
+    def download_web_files(self) -> None:
+        page_url = self.web_url.get().strip()
+        if not page_url:
+            messagebox.showwarning("Web ファイル保存", "Web ページの URL を入力してください。")
+            return
+
+        selected_extensions = self.get_selected_download_extensions()
+        if not selected_extensions:
+            messagebox.showwarning("Web ファイル保存", "ダウンロードするファイル形式を1つ以上選択してください。")
+            return
+
+        output_path = Path(self.download_dir.get()).expanduser()
+        output_path.mkdir(parents=True, exist_ok=True)
+
+        try:
+            downloaded = download_file_links(page_url, output_path, selected_extensions)
+        except Exception as error:  # noqa: BLE001 - show actionable desktop error dialog
+            messagebox.showerror("Web ファイル保存エラー", f"ファイルのダウンロードに失敗しました。\n{error}")
+            return
+
+        self.download_status.set(f"{downloaded} 件のファイルを保存しました: {output_path}")
+        messagebox.showinfo("Web ファイル保存", f"{downloaded} 件のファイルを保存しました。")
 
     def add_merge_files(self) -> None:
         files = filedialog.askopenfilenames(title="統合する PDF を選択", filetypes=[("PDF files", "*.pdf")])
@@ -216,6 +302,106 @@ class PdfToolboxApp(tk.Tk):
     def _write_pdf(writer: Any, path: Path) -> None:
         with path.open("wb") as output_file:
             writer.write(output_file)
+
+
+class DownloadFileType(NamedTuple):
+    """Display label and extensions for one selectable download type."""
+
+    label: str
+    extensions: tuple[str, ...]
+
+
+DOWNLOAD_FILE_TYPES: dict[str, DownloadFileType] = {
+    "pdf": DownloadFileType("PDF", (".pdf",)),
+    "word": DownloadFileType("Word", (".doc", ".docx")),
+    "excel": DownloadFileType("Excel", (".xls", ".xlsx", ".csv")),
+    "powerpoint": DownloadFileType("PowerPoint", (".ppt", ".pptx")),
+    "text": DownloadFileType("テキスト", (".txt",)),
+    "image": DownloadFileType("画像", (".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg")),
+    "archive": DownloadFileType("圧縮ファイル", (".zip", ".rar", ".7z", ".tar", ".gz")),
+    "audio": DownloadFileType("音声", (".mp3", ".wav")),
+    "video": DownloadFileType("動画", (".mp4", ".mov", ".avi", ".wmv")),
+    "installer": DownloadFileType("インストーラー", (".exe", ".dmg", ".iso")),
+}
+
+FILE_LINK_EXTENSIONS = {
+    extension
+    for file_type in DOWNLOAD_FILE_TYPES.values()
+    for extension in file_type.extensions
+}
+
+
+class FileLinkParser(HTMLParser):
+    """Collect href/src values that point to downloadable files."""
+
+    def __init__(self, base_url: str, allowed_extensions: set[str] | None = None) -> None:
+        super().__init__()
+        self.base_url = base_url
+        self.allowed_extensions = allowed_extensions
+        self.links: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attr_names = ("href", "src") if tag in {"a", "source", "video", "audio", "img"} else ("href",)
+        values = dict(attrs)
+        for attr_name in attr_names:
+            value = values.get(attr_name)
+            if value and is_file_link(value, self.allowed_extensions):
+                absolute_url = urljoin(self.base_url, value)
+                if absolute_url not in self.links:
+                    self.links.append(absolute_url)
+
+
+def is_file_link(url: str, allowed_extensions: set[str] | None = None) -> bool:
+    """Return True when a URL path has one of the allowed file extensions."""
+    extensions = allowed_extensions if allowed_extensions is not None else FILE_LINK_EXTENSIONS
+    path = urlparse(url).path.lower()
+    return Path(path).suffix in extensions
+
+
+def normalize_extensions(extensions: set[str]) -> set[str]:
+    """Normalize user-selected extensions for case-insensitive matching."""
+    return {extension.lower() if extension.startswith(".") else f".{extension.lower()}" for extension in extensions}
+
+
+def extract_file_links(html: str, base_url: str, allowed_extensions: set[str] | None = None) -> list[str]:
+    """Extract unique absolute file links from an HTML document."""
+    normalized_extensions = normalize_extensions(allowed_extensions) if allowed_extensions is not None else None
+    parser = FileLinkParser(base_url, normalized_extensions)
+    parser.feed(html)
+    return parser.links
+
+
+def safe_download_name(url: str, used_names: set[str]) -> str:
+    """Create a filesystem-safe unique filename from a URL."""
+    parsed = urlparse(url)
+    name = unquote(Path(parsed.path).name) or "download"
+    name = re.sub(r'[^\w.()\- ]+', "_", name).strip(" .") or "download"
+    stem = Path(name).stem or "download"
+    suffix = Path(name).suffix
+    candidate = name
+    counter = 2
+    while candidate in used_names:
+        candidate = f"{stem}_{counter}{suffix}"
+        counter += 1
+    used_names.add(candidate)
+    return candidate
+
+
+def download_file_links(page_url: str, output_dir: Path, allowed_extensions: set[str]) -> int:
+    """Download direct file links matching allowed_extensions into output_dir."""
+    request = Request(page_url, headers={"User-Agent": "PDF-Toolbox-Web-Downloader/1.0"})
+    with urlopen(request, timeout=30) as response:  # noqa: S310 - user-provided desktop utility URL
+        charset = response.headers.get_content_charset() or "utf-8"
+        html = response.read().decode(charset, errors="replace")
+
+    links = extract_file_links(html, page_url, allowed_extensions)
+    used_names: set[str] = set()
+    for link in links:
+        target = output_dir / safe_download_name(link, used_names)
+        file_request = Request(link, headers={"User-Agent": "PDF-Toolbox-Web-Downloader/1.0"})
+        with urlopen(file_request, timeout=60) as response, target.open("wb") as output_file:  # noqa: S310
+            output_file.write(response.read())
+    return len(links)
 
 
 def parse_page_ranges(range_text: str, page_count: int) -> list[tuple[int, int]]:
