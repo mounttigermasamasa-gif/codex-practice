@@ -37,6 +37,12 @@ python3 -m venv .venv
 ./.venv/bin/python pdf_toolbox.py
 ```
 
+## ワンクリック起動（Windows）
+
+セットアップ後は、リポジトリ直下の `start_pdf_toolbox.bat` をダブルクリックするとアプリを起動できます。
+
+この起動ファイルは、まず `.venv\Scripts\pythonw.exe` を探し、見つからない場合は PC にインストール済みの Python ランチャーや `pythonw.exe` / `python.exe` を順番に探して `pdf_toolbox.py` を起動します。
+
 ## 使い方
 
 ### PDF の統合
