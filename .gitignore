@@ -1,8 +1,13 @@
+# JavaScript / browser tooling
 node_modules/
-.pytest_cache/
+
+# Python
 __pycache__/
 *.py[cod]
 .venv/
+.pytest_cache/
+
+# Build artifacts
 build/
 dist/
 *.spec
