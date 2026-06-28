@@ -5,7 +5,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pdf_toolbox import extract_file_links, is_file_link, normalize_extensions, parse_page_ranges, safe_download_name
+from pdf_toolbox import (
+    extract_file_links,
+    format_extensions_for_status,
+    is_file_link,
+    normalize_extensions,
+    parse_page_ranges,
+    safe_download_name,
+)
 
 
 def test_parse_page_ranges_accepts_single_pages_and_ranges():
@@ -36,6 +43,10 @@ def test_is_file_link_filters_to_selected_extensions():
 
 def test_normalize_extensions_adds_dots_and_lowercases_values():
     assert normalize_extensions({"PDF", ".DOCX"}) == {".pdf", ".docx"}
+
+
+def test_format_extensions_for_status_sorts_normalized_extensions():
+    assert format_extensions_for_status({"docx", ".PDF"}) == ".docx, .pdf"
 
 
 def test_extract_file_links_returns_unique_absolute_file_links():

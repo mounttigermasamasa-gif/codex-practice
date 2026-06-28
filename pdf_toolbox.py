@@ -177,7 +177,8 @@ class PdfToolboxApp(tk.Tk):
             messagebox.showerror("Web ファイル保存エラー", f"ファイルのダウンロードに失敗しました。\n{error}")
             return
 
-        self.download_status.set(f"{downloaded} 件のファイルを保存しました: {output_path}")
+        selected_text = format_extensions_for_status(selected_extensions)
+        self.download_status.set(f"{downloaded} 件のファイルを保存しました ({selected_text}): {output_path}")
         messagebox.showinfo("Web ファイル保存", f"{downloaded} 件のファイルを保存しました。")
 
     def add_merge_files(self) -> None:
@@ -385,6 +386,11 @@ def safe_download_name(url: str, used_names: set[str]) -> str:
         counter += 1
     used_names.add(candidate)
     return candidate
+
+
+def format_extensions_for_status(extensions: set[str]) -> str:
+    """Format selected extensions for the download status message."""
+    return ", ".join(sorted(normalize_extensions(extensions)))
 
 
 def download_file_links(page_url: str, output_dir: Path, allowed_extensions: set[str]) -> int:
